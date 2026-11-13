@@ -71,15 +71,12 @@ appmod.CONFIG_PATH = os.path.join(tempfile.gettempdir(), "whale_clicker_test_con
 
 
 def close_app(a, root):
-    """收尾：取消 _on_close 排的延时销毁，再手动 destroy，避免 after 落空噪音。"""
+    """收尾：_on_close 已立即 destroy，这里只兜底，避免 after 落空噪音。"""
     a._on_close()
-    aid = getattr(a, "_destroy_after_id", None)
-    if aid is not None:
-        try:
-            root.after_cancel(aid)
-        except Exception:
-            pass
-    root.update()
+    try:
+        root.update()
+    except Exception:
+        pass
     try:
         root.destroy()
     except Exception:

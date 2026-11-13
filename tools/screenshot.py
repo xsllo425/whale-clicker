@@ -51,15 +51,11 @@ for theme, fname in (("light", "screenshot-light.png"), ("dark", "screenshot-dar
         a._toggle_theme()
     shot(fname)
 
-aid = getattr(a, "_destroy_after_id", None)
 a._on_close()
-aid = getattr(a, "_destroy_after_id", None)
-if aid is not None:
-    try:
-        root.after_cancel(aid)
-    except Exception:
-        pass
-root.update()
+try:
+    root.update()
+except Exception:
+    pass
 try:
     root.destroy()
 except Exception:

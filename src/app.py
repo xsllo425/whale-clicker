@@ -25,7 +25,7 @@ except ImportError:
     HAS_SVTTK = False
 
 APP_NAME = "鲸鱼连点器"
-APP_VERSION = "1.0.2"
+APP_VERSION = "1.0.3"
 
 
 def _app_dir():
@@ -415,8 +415,17 @@ class App:
         self._register_hotkey(name)
         self.cfg["hotkey"] = name
 
+    def _post(self, fn, *args):
+        """工作线程→主线程的唯一入口：窗口已关/已销毁时静默丢弃，防 TclError。"""
+        if self._closing:
+            return
+        try:
+            self.root.after(0, fn, *args)
+        except tk.TclError:
+            pass
+
     def _hotkey_pressed(self):
-        self.root.after(0, self.toggle)
+        self._post(self.toggle)
 
     # ---------- 鼠标钩子（侧键1 开关 + 真实按键观察） ----------
     def _register_hook(self):
@@ -424,9 +433,9 @@ class App:
             self.hook.stop()
             self.hook = None
         self.hook = core.InputHookListener(
-            on_side1=lambda: self.root.after(0, self.toggle),
-            on_button_down=lambda b: self.root.after(0, self._real_down, b),
-            on_button_up=lambda b: self.root.after(0, self._real_up, b),
+            on_side1=lambda: self._post(self.toggle),
+            on_button_down=lambda b: self._post(self._real_down, b),
+            on_button_up=lambda b: self._post(self._real_up, b),
             swallow_side=bool(self.swallow_var.get()) if hasattr(self, "swallow_var") else bool(self.cfg.get("swallow_side", True)),
             side_enabled=bool(self.mouse_side_var.get()) if hasattr(self, "mouse_side_var") else bool(self.cfg.get("mouse_side", True)),
         )
@@ -533,10 +542,16 @@ class App:
                 self.status_var.set("你按住了鼠标 · 连点暂停，松手继续")
             else:
                 self.status_var.set(f"连点中 · 已点击 {self.clicker.count_done} 次")
-        self.root.after(100, self._tick)
+        self._tick_after_id = self.root.after(100, self._tick)
 
     def _on_close(self):
         self._closing = True
+        aid = getattr(self, "_tick_after_id", None)
+        if aid is not None:
+            try:
+                self.root.after_cancel(aid)
+            except Exception:
+                pass
         self.clicker.stop()
         self.clicker.wait_done(0.5)
         if self.listener:
@@ -544,7 +559,7 @@ class App:
         if self.hook:
             self.hook.stop()
         self._save_config()
-        self._destroy_after_id = self.root.after(120, self.root.destroy)
+        self.root.destroy()
 
 
 def main():
