@@ -39,7 +39,7 @@
 
 ## 下载与运行
 
-到 [Releases](../../releases) 下载 `鲸鱼连点器.exe`，双击运行。
+到 [Releases](../../releases) 下载 `whale-clicker.exe`，双击运行。
 启动时弹一次 UAC 提权确认，点「是」——**必须管理员权限**才能点进以管理员身份运行的游戏（Windows UIPI 限制）。
 
 > 杀毒软件可能对未签名的 PyInstaller 单文件 exe 报启发式警告；源码完全公开，可自行审查或按下面步骤从源码打包。

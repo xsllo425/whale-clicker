@@ -36,7 +36,7 @@ Its own injected clicks carry the injected flag and are ignored by its own hook 
 
 ## Download
 
-Grab `鲸鱼连点器.exe` from [Releases](../../releases) and run it. Accept the UAC prompt once — **administrator rights are required** to click into games that run elevated (Windows UIPI).
+Grab `whale-clicker.exe` from [Releases](../../releases) and run it. Accept the UAC prompt once — **administrator rights are required** to click into games that run elevated (Windows UIPI).
 
 > Unsigned PyInstaller one-file exes may trigger heuristic AV warnings; the source is fully open — audit it or build from source below.
 

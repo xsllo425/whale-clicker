@@ -24,9 +24,14 @@ jobs:
       - name: Build exe
         shell: pwsh
         run: ./build.ps1 -Py python
+      - name: Stage release asset (ASCII name)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path release | Out-Null
+          Copy-Item "dist/鲸鱼连点器.exe" "release/whale-clicker.exe"
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
           name: 鲸鱼连点器 ${{ github.ref_name }}
-          files: dist/鲸鱼连点器.exe
+          files: release/whale-clicker.exe
           body_path: CHANGELOG.md
