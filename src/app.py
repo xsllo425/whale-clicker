@@ -8,6 +8,7 @@
 """
 import json
 import os
+import queue
 import sys
 import time
 import tkinter as tk
@@ -24,7 +25,7 @@ except ImportError:
     HAS_SVTTK = False
 
 APP_NAME = "鲸鱼连点器"
-APP_VERSION = "1.0.1"
+APP_VERSION = "1.0.2"
 
 
 def _app_dir():
@@ -81,6 +82,7 @@ class App:
         self._closing = False
         self._held = set()                 # 用户真实按住的鼠标键
         self._resume_after_hold = False    # 松手后是否恢复连点
+        self._stop_queue = queue.Queue()   # 工作线程→主线程：停止通知（绝不跨线程碰 Tk）
         self.cfg = dict(DEFAULTS)
         self._load_config()
         self.theme = self.cfg.get("theme", "light")
@@ -481,7 +483,10 @@ class App:
                 self.status_var.set("已松手 · 连点继续")
 
     def _on_clicker_stop(self):
-        self.root.after(0, self._stopped_ui)
+        # 本回调在工作线程里执行。绝不能在这里调 root.after / 碰任何 Tk 对象：
+        # 主线程若正卡在 wait_done 的 join 里，跨线程 Tk 调用会两边干等到超时
+        # （约 1 秒）——这就是点 X「卡一下」的根因。只塞队列，由主线程 _tick 取出刷 UI。
+        self._stop_queue.put(True)
 
     def _stopped_ui(self):
         self.start_btn.config(text="▶ 开始连点")
@@ -493,6 +498,13 @@ class App:
     def _tick(self):
         if self._closing:
             return
+        # 取出工作线程的停止通知（队列线程安全），在主线程里刷 UI
+        try:
+            while True:
+                self._stop_queue.get_nowait()
+                self._stopped_ui()
+        except queue.Empty:
+            pass
         p = PALETTE[self.theme]
         if self.listener:
             if self.listener.registered:

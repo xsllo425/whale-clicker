@@ -40,6 +40,19 @@ Grab `whale-clicker.exe` from [Releases](../../releases) and run it. Accept the 
 
 > Unsigned PyInstaller one-file exes may trigger heuristic AV warnings; the source is fully open — audit it or build from source below.
 
+## Why "Windows protected your PC"?
+
+The exe is **unsigned** (personal open-source projects don't buy code-signing certs), and browser-downloaded copies carry the Mark of the Web. Together they trip SmartScreen's blue warning. It's a **reputation check, not a virus scan**.
+
+Get past it (either):
+
+- On the blue dialog click **More info → Run anyway** (remembered per file);
+- Or right-click the exe → **Properties** → tick **Unblock** at the bottom → OK to strip the download mark; SmartScreen stops. Equivalent: `Unblock-File .\whale-clicker.exe`.
+
+Don't confuse it with the other prompt: this app requests **administrator on every launch** (required to click into games), so a **UAC** "Do you want to allow this app to make changes?" appears each time — that's normal and separate from SmartScreen; click Yes.
+
+Prefer none of this: run from source in an admin terminal (`python src\app.py`) — no SmartScreen at all.
+
 ## Run / build from source
 
 Windows + Python 3.10+ (developed on 3.14).
