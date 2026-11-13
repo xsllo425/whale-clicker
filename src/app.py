@@ -24,7 +24,7 @@ except ImportError:
     HAS_SVTTK = False
 
 APP_NAME = "鲸鱼连点器"
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.0.1"
 
 
 def _app_dir():
