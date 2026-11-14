@@ -27,8 +27,17 @@ class MOUSEINPUT(ctypes.Structure):
         ("dwExtraInfo", ULONG_PTR),
     ]
 
+class KEYBDINPUT(ctypes.Structure):
+    _fields_ = [
+        ("wVk", wintypes.WORD),
+        ("wScan", wintypes.WORD),
+        ("dwFlags", wintypes.DWORD),
+        ("time", wintypes.DWORD),
+        ("dwExtraInfo", ULONG_PTR),
+    ]
+
 class _INPUTunion(ctypes.Union):
-    _fields_ = [("mi", MOUSEINPUT)]
+    _fields_ = [("mi", MOUSEINPUT), ("ki", KEYBDINPUT)]
 
 class INPUT(ctypes.Structure):
     _fields_ = [("type", wintypes.DWORD), ("u", _INPUTunion)]
@@ -44,6 +53,8 @@ user32.GetCursorPos.restype = wintypes.BOOL
 
 # ---- 常量 ----
 INPUT_MOUSE = 0
+INPUT_KEYBOARD = 1
+KEYEVENTF_KEYUP = 0x0002
 MOUSEEVENTF_MOVE = 0x0001
 MOUSEEVENTF_LEFTDOWN = 0x0002
 MOUSEEVENTF_LEFTUP = 0x0004
@@ -75,6 +86,67 @@ VK_BY_NAME = {
     "F17": 0x80, "F18": 0x81, "F19": 0x82, "F20": 0x83,
     "F21": 0x84, "F22": 0x85, "F23": 0x86, "F24": 0x87,
 }
+
+HK_CTRL, HK_ALT, HK_SHIFT, HK_WIN = 1, 2, 4, 8
+MODIFIER_KEYS = {0x11: HK_CTRL, 0x12: HK_ALT, 0x10: HK_SHIFT,
+                 0x5B: HK_WIN, 0x5C: HK_WIN}
+
+def hotkey_parse(value):
+    """兼容旧设置，返回 (虚拟键码, 修饰键)。"""
+    if not isinstance(value, str):
+        return None
+    if value in VK_BY_NAME:
+        return VK_BY_NAME[value], 0
+    if value.startswith('VK:'):
+        try:
+            vk = int(value[3:])
+            return (vk, 0) if 1 <= vk <= 254 else None
+        except ValueError:
+            return None
+    if value.startswith('HK:'):
+        try:
+            _, vk, modifiers = value.split(':')
+            vk, modifiers = int(vk), int(modifiers)
+            if 1 <= vk <= 254 and 0 <= modifiers <= 15 and (not modifiers or vk not in MODIFIER_KEYS):
+                return vk, modifiers
+        except (ValueError, TypeError):
+            pass
+    return None
+
+def hotkey_vk(value):
+    parsed = hotkey_parse(value)
+    return parsed[0] if parsed else None
+
+def normalize_key(vk):
+    return {0xA0: 0x10, 0xA1: 0x10, 0xA2: 0x11, 0xA3: 0x11,
+            0xA4: 0x12, 0xA5: 0x12}.get(vk, vk)
+
+def hotkey_label(vk, modifiers=0):
+    if vk is None:
+        return '未设置'
+    if modifiers:
+        parts = [name for flag, name in ((HK_CTRL, 'Ctrl'), (HK_ALT, 'Alt'),
+                 (HK_SHIFT, 'Shift'), (HK_WIN, 'Win')) if modifiers & flag]
+        return ' + '.join(parts + [hotkey_label(vk)])
+    for name, code in VK_BY_NAME.items():
+        if code == vk:
+            return name
+    if 0x30 <= vk <= 0x39 or 0x41 <= vk <= 0x5A:
+        return chr(vk)
+    names = {0x08: 'Backspace', 0x09: 'Tab', 0x0D: 'Enter', 0x10: 'Shift',
+             0x11: 'Ctrl', 0x12: 'Alt', 0x1B: 'Esc', 0x20: '空格',
+             0x21: 'Page Up', 0x22: 'Page Down', 0x23: 'End', 0x24: 'Home',
+             0x25: '←', 0x26: '↑', 0x27: '→', 0x28: '↓', 0x2D: 'Insert',
+             0x2E: 'Delete', 0x5B: '左 Win', 0x5C: '右 Win'}
+    if vk in names:
+        return names[vk]
+    if 0x60 <= vk <= 0x69:
+        return '小键盘 ' + str(vk - 0x60)
+    scan = user32.MapVirtualKeyW(vk, 0)
+    buffer = ctypes.create_unicode_buffer(80)
+    if scan and user32.GetKeyNameTextW(scan << 16, buffer, len(buffer)):
+        return buffer.value
+    return f'按键 {vk}'
 
 
 class MSG(ctypes.Structure):
@@ -179,6 +251,30 @@ def send_button(button="left", down=True, pos=None):
     user32.SendInput(len(arr), arr, ctypes.sizeof(INPUT))
 
 
+def send_key_event(vk, down):
+    """发送一次键盘按下或抬起；调用方必须保证按下后最终抬起。"""
+    if not isinstance(vk, int) or isinstance(vk, bool) or not 1 <= vk <= 254:
+        raise ValueError('invalid virtual key')
+    event = INPUT()
+    event.type = INPUT_KEYBOARD
+    event.u.ki.wVk = vk
+    event.u.ki.dwFlags = 0 if down else KEYEVENTF_KEYUP
+    events = (INPUT * 1)(event)
+    if user32.SendInput(1, events, ctypes.sizeof(INPUT)) != 1:
+        raise ctypes.WinError(ctypes.get_last_error())
+
+
+def hold_key_until(vk, duration, stop_event):
+    """可中断的按键动作；退出或停止时保证尝试抬起。"""
+    if stop_event.is_set():
+        return False
+    send_key_event(vk, True)
+    try:
+        return not stop_event.wait(max(0, duration))
+    finally:
+        send_key_event(vk, False)
+
+
 class HotkeyListener:
     """在独立线程用 RegisterHotKey + 消息泵监听全局热键。"""
 
@@ -263,6 +359,98 @@ user32.UnhookWindowsHookEx.argtypes = [wintypes.HHOOK]
 user32.UnhookWindowsHookEx.restype = wintypes.BOOL
 user32.CallNextHookEx.argtypes = [wintypes.HHOOK, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM]
 user32.CallNextHookEx.restype = ctypes.c_ssize_t
+
+WH_KEYBOARD_LL = 13
+WM_KEYDOWN, WM_KEYUP = 0x0100, 0x0101
+WM_SYSKEYDOWN, WM_SYSKEYUP = 0x0104, 0x0105
+LLKHF_INJECTED = 0x10
+
+class KBDLLHOOKSTRUCT(ctypes.Structure):
+    _fields_ = [('vkCode', wintypes.DWORD), ('scanCode', wintypes.DWORD),
+                ('flags', wintypes.DWORD), ('time', wintypes.DWORD),
+                ('dwExtraInfo', ULONG_PTR)]
+
+class KeyboardHotkeyListener:
+    """观察单键，放行真实输入；钩子回调不能等待界面线程。"""
+    def __init__(self, vk, callback, modifiers=0):
+        self.vk = normalize_key(vk)
+        self.modifiers = modifiers
+        self.callback = callback
+        self.registered = False
+        self.error = None
+        self._tid = None
+        self._thread = None
+        self._stop_requested = threading.Event()
+        self._held_keys = set()
+        self._modifier_keys = set()
+        self._solo_candidate = False
+        self._proc_ref = HOOKPROC(self._keyboard_proc)
+
+    def _keyboard_proc(self, nCode, wParam, lParam):
+        if nCode >= 0:
+            info = ctypes.cast(lParam, ctypes.POINTER(KBDLLHOOKSTRUCT)).contents
+            key = info.vkCode
+            if not (info.flags & LLKHF_INJECTED):
+                normalized = normalize_key(key)
+                down = wParam in (WM_KEYDOWN, WM_SYSKEYDOWN)
+                up = wParam in (WM_KEYUP, WM_SYSKEYUP)
+                mod = MODIFIER_KEYS.get(normalized, 0)
+                if down and self._solo_candidate and key not in self._held_keys:
+                    self._solo_candidate = False
+                if down and mod:
+                    self._modifier_keys.add(key)
+                if down and normalized == self.vk and key not in self._held_keys:
+                    self._held_keys.add(key)
+                    mask = 0
+                    for held in self._modifier_keys:
+                        mask |= MODIFIER_KEYS.get(normalize_key(held), 0)
+                    if mod:
+                        self._solo_candidate = not self.modifiers and mask == mod
+                    elif mask == self.modifiers:
+                        try:
+                            self.callback()
+                        except Exception:
+                            pass
+                if up:
+                    if mod and normalized == self.vk and key in self._held_keys and self._solo_candidate:
+                        try:
+                            self.callback()
+                        except Exception:
+                            pass
+                        self._solo_candidate = False
+                    self._held_keys.discard(key)
+                    self._modifier_keys.discard(key)
+        return user32.CallNextHookEx(None, nCode, wParam, lParam)
+
+    def start(self):
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def _run(self):
+        self._tid = kernel32.GetCurrentThreadId()
+        msg = MSG()
+        user32.PeekMessageW(ctypes.byref(msg), None, 0, 0, 0)
+        if self._stop_requested.is_set():
+            return
+        hook = user32.SetWindowsHookExW(WH_KEYBOARD_LL, self._proc_ref, None, 0)
+        if not hook:
+            self.error = ctypes.get_last_error()
+            return
+        self.registered = True
+        for key in (0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0x5B, 0x5C):
+            if user32.GetAsyncKeyState(key) & 0x8000:
+                self._modifier_keys.add(key)
+        try:
+            while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
+                pass
+        finally:
+            user32.UnhookWindowsHookEx(hook)
+            self.registered = False
+
+    def stop(self):
+        self._stop_requested.set()
+        if self._tid is not None:
+            user32.PostThreadMessageW(self._tid, WM_QUIT, 0, 0)
 
 
 class InputHookListener:

@@ -25,7 +25,7 @@ except ImportError:
     HAS_SVTTK = False
 
 APP_NAME = "鲸鱼连点器"
-APP_VERSION = "1.0.3"
+APP_VERSION = "1.0.6"
 
 
 def _app_dir():
@@ -62,7 +62,6 @@ DEFAULTS = {
 
 BUTTON_LABELS = {"左键": "left", "右键": "right", "中键": "middle"}
 BUTTON_LABELS_REV = {v: k for k, v in BUTTON_LABELS.items()}
-F_KEYS = [f"F{i}" for i in range(1, 13)]
 
 # 深浅两套语义色（状态文字用）
 PALETTE = {
@@ -80,9 +79,12 @@ class App:
         self.hook = None           # 鼠标钩子：侧键1 开关 + 真实按键观察
         self.capture_deadline = 0
         self._closing = False
+        self._capturing_hotkey = False
+        self._hotkey_setting = DEFAULTS['hotkey']
         self._held = set()                 # 用户真实按住的鼠标键
         self._resume_after_hold = False    # 松手后是否恢复连点
         self._stop_queue = queue.Queue()   # 工作线程→主线程：停止通知（绝不跨线程碰 Tk）
+        self._event_queue = queue.Queue()  # 热键和鼠标钩子只入队，不等待界面线程
         self.cfg = dict(DEFAULTS)
         self._load_config()
         self.theme = self.cfg.get("theme", "light")
@@ -96,8 +98,11 @@ class App:
         self._apply_theme(initial=True)
         self._build_ui()
         self._apply_config_to_ui()
-        self._register_hotkey(self.cfg["hotkey"])
+        self._register_hotkey(self._hotkey_setting)
         self._register_hook()
+        root.bind('<KeyPress>', self._capture_hotkey)
+        root.bind('<KeyRelease>', self._capture_hotkey_release)
+        self._poll_events()
         self._tick()
         root.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -243,9 +248,11 @@ class App:
         row = ttk.Frame(main); row.grid(row=8, column=0, sticky="ew", **pad)
         ttk.Label(row, text="连点热键", width=9).pack(side="left")
         self.hotkey_var = tk.StringVar()
-        hk = ttk.Combobox(row, textvariable=self.hotkey_var, values=F_KEYS, width=6, state="readonly")
-        hk.pack(side="left")
-        hk.bind("<<ComboboxSelected>>", self._hotkey_changed)
+        self.hotkey_button = ttk.Button(row, textvariable=self.hotkey_var, width=20,
+                                        command=self._begin_hotkey_capture)
+        self.hotkey_button.pack(side="left")
+        self.hotkey_button.bind('<KeyPress>', self._capture_hotkey)
+        self.hotkey_button.bind('<KeyRelease>', self._capture_hotkey_release)
         lbl = ttk.Label(row, text="开/关连点", foreground=p["muted"]); lbl.pack(side="left", padx=6)
         self._muted_labels.append(lbl)
         self.hk_status = ttk.Label(row, text="", foreground=p["muted"])
@@ -309,7 +316,8 @@ class App:
         self.pos_label.config(text=f"X: {c['fixed_x']}    Y: {c['fixed_y']}")
         self.limit_var.set(bool(c["count_limit"]))
         self.count_var.set(str(c["count"]))
-        self.hotkey_var.set(c["hotkey"])
+        self._hotkey_setting = c["hotkey"] if core.hotkey_vk(c["hotkey"]) is not None else DEFAULTS['hotkey']
+        self.hotkey_var.set(core.hotkey_label(*core.hotkey_parse(self._hotkey_setting)))
         self.mouse_side_var.set(bool(c.get("mouse_side", True)))
         self.swallow_var.set(bool(c.get("swallow_side", True)))
         self.yield_var.set(bool(c.get("auto_yield", True)))
@@ -330,7 +338,7 @@ class App:
             pass
         c["count_limit"] = bool(self.limit_var.get())
         c["count"] = self._parse_count()
-        c["hotkey"] = self.hotkey_var.get()
+        c["hotkey"] = self._hotkey_setting
         c["mouse_side"] = bool(self.mouse_side_var.get())
         c["swallow_side"] = bool(self.swallow_var.get())
         c["auto_yield"] = bool(self.yield_var.get())
@@ -398,34 +406,98 @@ class App:
         self.capture_deadline = time.time() + 3.0
         self.status_var.set("3 秒内把鼠标移到目标位置…")
 
-    # ---------- 连点热键（RegisterHotKey） ----------
+    # ---------- 连点热键（不拦截键盘输入） ----------
     def _register_hotkey(self, name):
         if self.listener:
             self.listener.stop()
             self.listener = None
-        vk = core.VK_BY_NAME.get(name)
-        if vk is None:
+        parsed = core.hotkey_parse(name)
+        if parsed is None:
             self.hk_status.config(text="未知热键", foreground=PALETTE[self.theme]["warn"])
             return
-        self.listener = core.HotkeyListener(vk, self._hotkey_pressed)
+        vk, modifiers = parsed
+        self.listener = core.KeyboardHotkeyListener(vk, self._hotkey_pressed, modifiers)
         self.listener.start()
 
-    def _hotkey_changed(self, _event=None):
-        name = self.hotkey_var.get()
-        self._register_hotkey(name)
-        self.cfg["hotkey"] = name
+    def _begin_hotkey_capture(self):
+        if self._capturing_hotkey:
+            self._capturing_hotkey = False
+            self.hotkey_var.set(core.hotkey_label(*core.hotkey_parse(self._hotkey_setting)))
+            return
+        self._capturing_hotkey = True
+        self._capture_modifiers = set()
+        self._capture_chorded = False
+        self.hotkey_var.set('请按单键或组合键')
+        self.hk_status.config(text='再点取消', foreground=PALETTE[self.theme]['muted'])
+        self.hotkey_button.focus_set()
+
+    def _capture_hotkey(self, event):
+        if not self._capturing_hotkey:
+            return
+        vk = core.normalize_key(event.keycode)
+        if not 1 <= vk <= 254:
+            self.hk_status.config(text='无法识别，换一个键', foreground=PALETTE[self.theme]['warn'])
+            return 'break'
+        if vk in core.MODIFIER_KEYS:
+            held = getattr(self, '_capture_modifiers', set())
+            if held and vk not in held:
+                self._capture_chorded = True
+            held.add(vk)
+            self._capture_modifiers = held
+            return 'break'
+        mask = 0
+        for key in getattr(self, '_capture_modifiers', set()):
+            mask |= core.MODIFIER_KEYS[key]
+        self._commit_hotkey(vk, mask)
+        return 'break'
+
+    def _capture_hotkey_release(self, event):
+        if not self._capturing_hotkey:
+            return
+        vk = core.normalize_key(event.keycode)
+        held = getattr(self, '_capture_modifiers', set())
+        if vk in held:
+            held.discard(vk)
+            if not held and not self._capture_chorded:
+                self._commit_hotkey(vk, 0)
+        return 'break'
+
+    def _commit_hotkey(self, vk, modifiers):
+        self._capturing_hotkey = False
+        self._hotkey_setting = f'HK:{vk}:{modifiers}' if modifiers else f'VK:{vk}'
+        self.hotkey_var.set(core.hotkey_label(vk, modifiers))
+        self.cfg['hotkey'] = self._hotkey_setting
+        self._register_hotkey(self._hotkey_setting)
 
     def _post(self, fn, *args):
-        """工作线程→主线程的唯一入口：窗口已关/已销毁时静默丢弃，防 TclError。"""
+        """钩子线程只入队，绝不跨线程调用 Tk。"""
         if self._closing:
             return
-        try:
-            self.root.after(0, fn, *args)
-        except tk.TclError:
-            pass
+        self._event_queue.put((fn, args))
+
+    def _drain_events(self):
+        for _ in range(256):
+            if self._closing:
+                return
+            try:
+                fn, args = self._event_queue.get_nowait()
+            except queue.Empty:
+                return
+            try:
+                fn(*args)
+            except Exception:
+                self.root.report_callback_exception(*sys.exc_info())
+
+    def _poll_events(self):
+        if self._closing:
+            return
+        self._drain_events()
+        if not self._closing:
+            self._events_after_id = self.root.after(5, self._poll_events)
 
     def _hotkey_pressed(self):
-        self._post(self.toggle)
+        if not self._capturing_hotkey:
+            self._post(self.toggle)
 
     # ---------- 鼠标钩子（侧键1 开关 + 真实按键观察） ----------
     def _register_hook(self):
@@ -515,11 +587,11 @@ class App:
         except queue.Empty:
             pass
         p = PALETTE[self.theme]
-        if self.listener:
+        if self.listener and not self._capturing_hotkey:
             if self.listener.registered:
-                self.hk_status.config(text="已注册", foreground=p["ok"])
+                self.hk_status.config(text="已启用", foreground=p["ok"])
             elif self.listener.error is not None:
-                self.hk_status.config(text="被占用，换一个", foreground=p["warn"])
+                self.hk_status.config(text="监听失败", foreground=p["warn"])
         if self.hook:
             if self.hook.installed:
                 self.hook_status.config(text="")
@@ -546,6 +618,12 @@ class App:
 
     def _on_close(self):
         self._closing = True
+        event_aid = getattr(self, "_events_after_id", None)
+        if event_aid is not None:
+            try:
+                self.root.after_cancel(event_aid)
+            except Exception:
+                pass
         aid = getattr(self, "_tick_after_id", None)
         if aid is not None:
             try:

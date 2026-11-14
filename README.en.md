@@ -28,7 +28,7 @@ Its own injected clicks carry the injected flag and are ignored by its own hook 
 | Double-click per tick | optional |
 | Position | follow cursor / fixed point (3s countdown capture) |
 | Count | infinite or limited, auto-stop |
-| Toggle | **F8** (F1–F12 configurable) or **mouse side button 1**, global hotkey |
+| Toggle | **F8** by default; click the hotkey button and press a key or key combination, or use **mouse side button 1** |
 | Side buttons | side1 = toggle; can disable; can swallow original side-button function |
 | Auto-yield | pause on real hold, resume on release; optional |
 | Theme | light / dark, remembered |
